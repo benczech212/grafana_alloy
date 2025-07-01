@@ -1,0 +1,6 @@
+prometheus.exporter.self "prometheus_exporter" {}
+
+prometheus.scrape "prometheus_self_scrape" {
+  targets    = prometheus.exporter.self.prometheus_exporter.targets
+  forward_to = [otelcol.receiver.prometheus.otlp.receiver]
+}

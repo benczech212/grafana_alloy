@@ -1,0 +1,13 @@
+prometheus.exporter.process "process_exporter" {
+//   track_children = false
+
+  // matcher {
+    // comm = ["alloy"]
+  // }
+}
+
+// Configure a prometheus.scrape component to collect process_exporter metrics.
+prometheus.scrape "process_exporter_scrape" {
+  targets    = prometheus.exporter.process.process_exporter.targets
+  forward_to = [otelcol.receiver.prometheus.otlp.receiver]
+}

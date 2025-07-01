@@ -1,0 +1,101 @@
+declare "activemq_collector" {
+	argument "activemq_host_address" {
+		optional = false
+		comment = "Host of ActiveMQ server"
+	}
+	argument "activemq_log_path" {
+		optional = false
+		comment = "Path to ActiveMQ log file"
+	}
+	argument "activemq_cluster_name" {
+		optional = false
+		comment = "Name of ActiveMQ cluster"
+	}
+	argument "otlp_reciever_loki" {
+		optional = false
+		comment = "OTLP reciever for Loki"
+	}
+	argument "otlp_reciever_prometheus" {
+		optional = false
+		comment = "OTLP reciever for Prometheus"
+	}
+
+		
+	// ------------------------------
+	//  Logs
+	local.file_match "logs_integrations_integrations_apache_activemq" {
+		path_targets = [{
+			__address__      = env("ACTIVEMQ_HOST_ADDRESS"),
+			__path__         = env("ACTIVEMQ_LOG_PATH"),//"<activemq_install_dir>/data/activemq.log"
+			activemq_cluster = env("ACTIVEMQ_CLUSTER_NAME"),
+			instance         = constants.hostname,
+			job              = "integrations/apache-activemq",
+		}]
+	}
+
+	loki.process "logs_integrations_integrations_apache_activemq" {
+		forward_to = [otelcol.receiver.loki.otlp.receiver]
+
+		stage.multiline {
+			firstline     = "(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)"
+			max_lines     = 0
+			max_wait_time = "3s"
+		}
+
+		stage.regex {
+			expression = "(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\\s*[\\|:]\\s*(?P<message>.+)"
+		}
+
+		stage.labels {
+			values = {
+				level = null,
+			}
+		}
+	}
+
+	loki.source.file "logs_integrations_integrations_apache_activemq" {
+		targets    = local.file_match.logs_integrations_integrations_apache_activemq.targets
+		forward_to = [loki.process.logs_integrations_integrations_apache_activemq.receiver]
+	}
+
+	// ------------------------------
+	// Metrics
+
+	prometheus.scrape "metrics_integrations_integrations_apache_activemq" {
+		targets = [{
+			__address__      = env("ACTIVEMQ_HOST_ADDRESS"),
+			activemq_cluster = env("ACTIVEMQ_CLUSTER_NAME"),
+		}]
+		forward_to = [discovery.relabel.activemq_relabel.output]
+		job_name   = "integrations/apache-activemq"
+		
+	}
+
+	discovery.relabel "activemq_relabel" {
+	forward_to = [otelcol.receiver.prometheus.otlp.receiver]
+
+	rule {
+		source_labels = ["__address__"]
+		target_label  = "activemq_host_address"
+	}
+
+	rule {
+		source_labels = ["instance"]
+		target_label  = "boot_id"
+	}
+
+	rule {
+		source_labels = ["__journal__transport"]
+		target_label  = "transport"
+	}
+
+	rule {
+		source_labels = ["__journal_priority_keyword"]
+		target_label  = "level"
+	}
+
+	}
+
+
+}
+

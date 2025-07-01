@@ -1,0 +1,16 @@
+discovery.relabel "metrics_integrations_integrations_jvm" {
+	targets = [{
+		__address__ = "localhost:1234",
+	}]
+
+	rule {
+		target_label = "instance"
+		replacement  = constants.hostname
+	}
+}
+
+prometheus.scrape "metrics_integrations_integrations_jvm" {
+	targets    = discovery.relabel.metrics_integrations_integrations_jvm.output
+	forward_to = [otelcol.receiver.prometheus.otlp.receiver]
+	job_name   = "integrations/jvm"
+}

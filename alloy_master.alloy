@@ -1,0 +1,499 @@
+// Declare a reusable OTLP receiver component
+declare "otlp_receiver" {
+  argument "grpc_endpoint" {
+    optional = false
+    comment  = "The GRPC endpoint for OTLP receiver."
+  }
+  
+  argument "http_endpoint" {
+    optional = false
+    comment  = "The HTTP endpoint for OTLP receiver."
+  }
+  argument "output" {
+    optional = false
+    default = otelcol.processor.attributes.add_global_labels.input
+    comment  = "The output of the receiver."
+  }
+  
+  otelcol.receiver.otlp "receiver" {
+    grpc {
+      endpoint = argument.grpc_endpoint.value
+    }
+    http {
+      endpoint = argument.http_endpoint.value
+    }
+    
+    output {
+      metrics = [otelcol.processor.attributes.add_global_labels.input]
+      logs = [otelcol.processor.attributes.add_global_labels.input]
+      traces = [otelcol.processor.attributes.add_global_labels.input]
+    }
+  }
+
+  // Export the configuration for reuse
+  export "otlp_receiver_output" {
+    value = {
+      grpc_endpoint = argument.grpc_endpoint.value,
+      http_endpoint = argument.http_endpoint.value
+    }
+  }
+}
+// Declare a reusable processor for adding global labels
+declare "global_labels_processor" {
+    argument "client_name" {
+        optional = false
+        comment  = "The client name."
+    }
+    argument "client_location" {
+        optional = false
+        comment  = "The client location."
+    }
+    argument "client_environment" {
+        optional = false
+        comment  = "The client environment."
+    }
+    argument "client_key" {
+        optional = false
+        comment  = "A unique identifier for the client."
+    }
+    argument "output" {
+        optional = false
+        default = otelcol.processor.memory_limiter.main_limiter.input
+        comment  = "The output of the processor."
+    }
+
+  otelcol.processor.attributes "add_global_labels" {
+    action {
+      key = "client_name"
+      value = argument.client_name.value
+      action = "insert"
+    }
+    
+    action {
+      key = "client_location"
+      value = argument.client_location.value
+      action = "insert"
+    }
+    
+    action {
+      key = "client_environment"
+      value = argument.client_environment.value
+      action = "insert"
+    }
+    
+    action {
+      key = "client_key"
+      value = argument.client_key.value
+      action = "insert"
+    }
+
+    output {
+      metrics = [argument.output.value]
+      logs = [otelcol.processor.transform.global_loki_labels.input]
+      traces = [argument.output.value]
+    }
+  }
+
+    otelcol.processor.transform "global_loki_labels" {
+    error_mode = "ignore"
+    log_statements {
+        context = "log" //not sure if this is resource or log for this example as we didnt identify which function worked in attributes, log = loki.attribute.labels and resource = loki.resource.labels
+        statements = [
+        `set(attributes["loki.attribute.labels"], Concat([attributes["loki.attribute.labels"], ", client_name, client_location, client_environment, client_key"], ""))`,
+        `set(attributes["loki.attribute.labels"],"client_name, client_location, client_environment, client_key") where attributes["loki.attribute.labels"] == nil`, //added trailing comma here
+        ]
+    }
+
+    output {
+        logs   = [argument.output.value]
+    }
+    }
+
+  Export the label processor configuration for reuse
+  export "global_labels_output" {
+    value = otelcol.processor.attributes.add_global_labels.output
+  }
+}
+
+declare "memory_limiter" {
+    argument "check_interval" {
+        optional = false
+        comment = "The interval at which to check memory usage."
+    }
+    argument "limit_percentage" {
+        optional = false
+        comment = "The percentage of memory usage to limit to."
+    }
+    argument "spike_limit_percentage" {
+        optional = false
+        comment = "The percentage of memory usage to allow for spikes."
+    }
+    argument "output" {
+        optional = false
+        default = otelcol.processor.batch.main_batch_processor.input
+        comment = "The output of the processor."
+    }
+    otelcol.processor.memory_limiter "main_limiter" {
+        check_interval = argument.check_interval.value
+        limit_percentage = argument.limit_percentage.value
+        spike_limit_percentage = argument.spike_limit_percentage.value
+
+        output {
+            metrics = [argument.output.value]
+            logs = [argument.output.value]
+            traces = [argument.output.value]
+        }
+    }
+
+    export "center_limiter_output" {
+        value = otelcol.processor.memory_limiter.main_limiter.output
+    }
+}
+
+// Declare a reusable batch processor component with boolean flags
+declare "batch_processor_component" {
+  // Arguments for endpoints, usernames, and API keys
+
+  // Boolean flags to enable or disable sending to each destination
+  argument "local_prometheus_enabled" {
+    optional = false
+    default = true
+    comment = "Flag to send metrics to Local Prometheus."
+  }
+
+  argument "cloud_prometheus_enabled" {
+    optional = false
+    default = true
+    comment = "Flag to send metrics to cloud Prometheus."
+  }
+
+    argument "cloud_loki_enabled" {
+        optional = false
+        default = true
+        comment = "Flag to send logs to cloud Loki."
+    }
+
+    argument "local_loki_enabled" {
+        optional = false
+        default = true
+        comment = "Flag to send logs to local Loki."
+    }
+    
+    argument "cloud_traces_enabled" {
+        optional = false
+        default = true
+        comment = "Flag to send traces to cloud OTLP."
+    }
+    argument "local_traces_enabled" {
+        optional = false
+        default = true
+        comment = "Flag to send traces to local OTLP."
+    }
+
+      argument "local_prometheus_address" {
+    optional = true
+    comment  = "Address for local Prometheus instance."
+  }
+  argument "local_loki_address" {
+    optional = true
+    comment  = "Address for local Loki instance."
+  }
+  argument "local_tempo_address" {
+    optional = true
+    comment  = "Address for local Tempo instance."
+  }
+  // Batch processor configuration with conditional output based on flags
+  otelcol.processor.batch "batch_processor" {
+    output {
+      metrics = [
+        argument.local_prometheus_enabled.value ? otelcol.exporter.prometheus.to_local_prometheus.input : null,
+        argument.cloud_prometheus_enabled.value ? otelcol.exporter.prometheus.to_cloud_prometheus.input : null
+      ]
+        logs = [
+            argument.local_loki_enabled.value ? otelcol.exporter.loki.to_local_loki.input : null,
+            argument.cloud_loki_enabled.value ? otelcol.exporter.loki.to_cloud_loki.input : null
+        ]
+        traces = [
+            // argument.local_traces_enabled.value ? otelcol.exporter.otlphttp.to_local_otel.input : null,
+            argument.cloud_traces_enabled.value ? otelcol.exporter.otlphttp.to_cloud_otel.input : null
+        ]
+    }
+  }
+
+    // Conditional Prometheus exporter to cloud
+    otelcol.exporter.prometheus "to_cloud_prometheus" {
+        forward_to = argument.send_to_prometheus.value ? [loki.write.to_cloud_loki.receiver] : []
+    }
+
+  
+    prometheus.remote_write "to_cloud_prometheus" {
+    endpoint {
+        url = env("GRAFANA_CLOUD_METRICS_ENDPOINT") //"https://prometheus-us-central1.grafana.net/api/prom/push"
+        auth = otelcol.auth.basic.grafana_cloud_prometheus_auth.handler
+    }
+    }
+
+    otelcol.exporter.loki "to_cloud_loki" {
+        forward_to = [loki.write.to_cloud_loki.receiver]
+    }
+
+    loki.write "to_cloud_loki" {
+        endpoint {
+            url = env("GRAFANA_CLOUD_LOGS_ENDPOINT") //"https://logs-xxx.grafana.net/loki/api/v1/push"
+            auth = otelcol.auth.basic.grafana_cloud_loki_auth.handler
+        }
+    }
+
+    //https://grafana.com/docs/grafana-cloud/send-data/otlp/send-data-otlp
+    otelcol.exporter.otlphttp "to_cloud_otel" {
+        client {
+            endpoint = env("GRAFANA_CLOUD_OTEL_ENDPOINT") //"https://otlp-gateway-prod-us-central-0.grafana.net/otlp" //Actual URL is instance specific
+            auth     = otelcol.auth.basic.grafana_cloud_otel_auth.handler //Only required if sending up to cloud
+        }
+    }
+    
+    otelcol.exporter.prometheus "to_local_prometheus" {
+        forward_to = [prometheus.remote_write.local_prometheus.receiver]
+    
+    }
+
+    prometheus.remote_write "local_prometheus" {
+    endpoint {
+        url = format("%s/api/v1/write", argument.local_prometheus_address.value)
+    }
+    }
+
+    //Only required if sending up to cloud
+    otelcol.auth.basic "grafana_cloud_otel_auth" {
+        username = env("GRAFANA_CLOUD_OTEL_USERNAME")
+        password = env("GRAFANA_CLOUD_API_KEY")
+    }
+    otelcol.auth.basic "grafana_cloud_prometheus_auth" {
+        username = env("GRAFANA_CLOUD_METRICS_USERNAME")
+        password = env("GRAFANA_CLOUD_API_KEY")
+    }
+    otelcol.auth.basic "grafana_cloud_loki_auth" {
+        username = env("GRAFANA_CLOUD_OTEL_USERNAME")
+        password = env("GRAFANA_CLOUD_API_KEY")
+    }
+    otelcol.auth.basic "grafana_cloud_tempo_auth" {
+        username = env("GRAFANA_CLOUD_OTEL_USERNAME")
+        password = env("GRAFANA_CLOUD_API_KEY")
+    }
+
+}
+
+// Declare a reusable component for logging, livedebugging, and tracing
+declare "monitoring_component" {
+  // Arguments for logging configuration
+  argument "log_level" {
+    optional = false
+    comment  = "Logging level for Alloy."
+  }
+
+  argument "log_format" {
+    optional = false
+    default = "logfmt"
+    comment  = "Format of the logs (e.g., logfmt, json)."
+  }
+
+  argument "loki_receiver" {
+    optional = false
+    comment  = "Loki receiver for log output."
+  }
+
+  // Arguments for tracing configuration
+  argument "tracing_sampling_fraction" {
+    optional = false
+    default = 0.1
+    comment = "Fraction of traces to sample (0.0 to 1.0)."
+  }
+
+  argument "resourcedetection_input" {
+    optional = false
+    comment  = "Resource detection input for tracing."
+  }
+
+  // Arguments for livedebugging
+  argument "livedebugging_enabled" {
+    optional = false
+    default  = true
+    comment  = "Flag to enable or disable livedebugging."
+  }
+
+  // Logging configuration
+  logging {
+    level  = argument.log_level.value
+    format = argument.log_format.value
+    write_to = [argument.loki_receiver.value]
+  }
+
+  // Livedebugging configuration
+  livedebugging {
+    enabled = argument.livedebugging_enabled.value
+  }
+
+  // Tracing configuration
+  tracing {
+    sampling_fraction = argument.tracing_sampling_fraction.value
+    write_to = [argument.resourcedetection_input.value]
+  }
+
+  // Export the component configuration for reuse
+  export "monitoring_output" {
+    value = {
+      log_level = argument.log_level.value,
+      tracing_sampling_fraction = argument.tracing_sampling_fraction.value
+    }
+  }
+}
+// Declare a reusable component for forwarding Prometheus, Loki metrics, and host info
+declare "local_metrics" {
+  // Arguments for environment variables or additional configuration
+  argument "vm_name_label" {
+    optional = false
+    comment  = "VM Name label to be added to attributes."
+  }
+  
+  argument "host_identifiers" {
+    optional = false
+    default = ["host.id"]
+    comment = "List of resource attributes used to identify unique hosts."
+  }
+  
+  argument "metrics_flush_interval" {
+    optional = false
+    default  = "60s"
+    comment  = "Interval for flushing host info metrics."
+  }
+  
+  // Forward Prometheus metrics to OTELCol
+  otelcol.receiver.prometheus "otlp_prometheus" {
+    output {
+      metrics = [otelcol.processor.resourcedetection.resource_detection.input]
+    }
+  }
+
+  // Forward Loki logs to OTELCol
+  otelcol.receiver.loki "otlp_loki" {
+    output {
+      logs = [otelcol.processor.resourcedetection.resource_detection.input]
+    }
+  }
+
+  // Resource detection processor
+  otelcol.processor.resourcedetection "resource_detection" { 
+    detectors = ["env", "system"]
+    system {
+      hostname_sources = ["os"]
+    }
+    output {
+      metrics = [otelcol.processor.attributes.add_local_labels.input]
+      logs = [otelcol.processor.attributes.add_local_labels.input]
+      traces = [otelcol.processor.attributes.add_local_labels.input]   
+    }
+  }
+
+  // Processor for adding local labels
+  otelcol.processor.attributes "add_local_labels" {
+    action {
+      key = "vm_name"
+      value = argument.vm_name_label.value
+      action = "insert"
+    }
+    output {
+      metrics = [otelcol.processor.attributes.add_global_labels.input]
+      logs = [otelcol.processor.transform.local_loki_labels.input]
+      traces = [otelcol.processor.attributes.add_global_labels.input]
+    }
+  }
+
+  // Loki label transformation
+  otelcol.processor.transform "local_loki_labels" {
+    error_mode = "ignore"
+    log_statements {
+      context = "log"
+      statements = [
+        `set(attributes["loki.attribute.labels"], Concat([attributes["loki.attribute.labels"], ", vm_name"], ""))`,
+        `set(attributes["loki.attribute.labels"], "vm_name") where attributes["loki.attribute.labels"] == nil`,
+      ]
+    }
+    output {
+      logs = [otelcol.processor.attributes.add_global_labels.input]
+    }
+  }
+
+  // Host info connector for generating usage metrics
+  otelcol.connector.host_info "host_info_connector" {
+    host_identifiers = argument.host_identifiers.value
+    metrics_flush_interval = argument.metrics_flush_interval.value
+    
+    output {
+      metrics = [otelcol.processor.resourcedetection.resource_detection.input]
+    }
+  }
+
+    // Export the component configuration for reuse
+    export "local_metrics_output" {
+        value = otelcol.processor.attributes.add_local_labels.output
+    }
+
+}
+
+
+// ------------
+
+// Use the monitoring component in the main configuration
+monitoring_component "alloy_monitoring" {
+  log_level = env("ALLOY_LOG_LEVEL")
+  log_format = "logfmt"
+  loki_receiver = otelcol.receiver.loki.otlp.receiver
+  tracing_sampling_fraction = 0.1
+  resourcedetection_input = otelcol.processor.resourcedetection.resource_detection.input
+  livedebugging_enabled = true
+}
+
+// Use the local_metrics component in the main configuration
+local_metrics "forward_local_metrics" {
+  vm_name_label = env("LABELS_VM_NAME")
+  host_identifiers = ["host.id", "host.name"]
+  metrics_flush_interval = "60s"
+}
+
+
+// Now use the custom components in your main configuration
+otlp_receiver "main_otlp" {
+  grpc_endpoint = "0.0.0.0:4317"
+  http_endpoint = "0.0.0.0:4318"
+  output = otelcol.processor.attributes.add_global_labels.input
+}
+
+global_labels_processor "global_labels" {
+    client_name = env("LABELS_CLIENT_NAME")
+    client_location = env("LABELS_CLIENT_LOCATION")
+    client_environment = env("LABELS_CLIENT_ENVIRONMENT")
+    client_key = env("LABELS_CLIENT_KEY")
+    output = otelcol.processor.memory_limiter.main_limiter.input
+}
+
+memory_limiter "main_limiter" {
+    check_interval = "1s"
+    limit_percentage = 50
+    spike_limit_percentage = 20
+    output = otelcol.processor.batch.main_batch_processor.input
+}
+
+
+// Now you can use the batch processor component in the main configuration
+batch_processor_component "main_batch_processor" {
+  local_prometheus_address = env("LOCAL_PROMETHEUS_ADDRESS")
+  
+  
+  // Set flags to control sending to Prometheus, Loki, and OTLP
+    local_prometheus_enabled = true
+    cloud_prometheus_enabled = true
+    cloud_loki_enabled = true
+    local_loki_enabled = false
+    cloud_traces_enabled = true
+    local_traces_enabled = false
+}

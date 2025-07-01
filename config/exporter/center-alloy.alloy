@@ -1,0 +1,228 @@
+
+// OTLP Receivers
+//https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.exporter.otlp/
+otelcol.receiver.otlp "receiver" {
+    debug_metrics {
+        disable_high_cardinality_metrics = false //Optional, Removes high cardinality attributes like IP addresses and port numbers from metrics
+    }
+
+    grpc {
+    endpoint = "0.0.0.0:4317" //Listens on all IP's, can be locked to a single IP and/or a different port if desired
+    }
+
+    http {
+        endpoint = "0.0.0.0:4318"
+    }
+  //Each type of payload can be sent along different routes if required. For this example we send everything the same way
+    output {
+        metrics = [otelcol.processor.attributes.add_global_labels.input]
+        logs = [otelcol.processor.attributes.add_global_labels.input]
+        traces = [otelcol.processor.attributes.add_global_labels.input]
+    }
+}
+
+
+//forward prometheus metrics to otelcol
+otelcol.receiver.prometheus "otlp" {
+    output {
+        metrics = [otelcol.processor.resourcedetection.resource_detection.input]
+    }
+}
+otelcol.receiver.loki "otlp" {
+    output {
+        logs = [otelcol.processor.resourcedetection.resource_detection.input]
+    }
+}
+
+
+
+//https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.processor.resourcedetection/#system
+otelcol.processor.resourcedetection "resource_detection" { 
+    detectors = ["env", "system"]
+    system {
+        hostname_sources = ["os"]
+    }
+    output {
+        metrics = [otelcol.processor.attributes.add_local_labels.input]
+        logs = [otelcol.processor.attributes.add_local_labels.input] 
+        traces = [otelcol.processor.attributes.add_local_labels.input]   
+    }
+}
+//https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.processor.attributes/
+otelcol.processor.attributes "add_local_labels" {
+    action {
+        key = "vm_name"
+        value = env("LABELS_VM_NAME")
+        action = "insert"
+    }
+    output {
+        metrics = [otelcol.processor.attributes.add_global_labels.input]
+        logs = [otelcol.processor.transform.local_loki_labels.input]
+        traces = [otelcol.processor.attributes.add_global_labels.input]    
+    }
+}
+otelcol.processor.transform "local_loki_labels" {
+  error_mode = "ignore"
+  log_statements {
+    context = "log" //not sure if this is resource or log for this example as we didnt identify which function worked in attributes, log = loki.attribute.labels and resource = loki.resource.labels
+    statements = [
+      `set(attributes["loki.attribute.labels"], Concat([attributes["loki.attribute.labels"], ", vm_name"], ""))`,
+	  `set(attributes["loki.attribute.labels"],"vm_name") where attributes["loki.attribute.labels"] == nil`, //added trailing comma here
+    ]
+  }
+
+  output {
+    logs    = [otelcol.processor.attributes.add_global_labels.input]
+  }
+}
+
+otelcol.processor.attributes "add_global_labels" {
+    action {
+        key = "client_name"
+        value = env("LABELS_CLIENT_NAME")
+        action = "insert"
+    }
+    action {
+        key = "client_location"
+        value = env("LABELS_CLIENT_LOCATION")
+        action = "insert"
+    }
+    action {
+        key = "client_environment"
+        value = env("LABELS_CLIENT_ENVIRONMENT")
+        action = "insert"
+    }
+    action {
+        key = "client_key"
+        value = env("LABELS_CLIENT_KEY")
+        action = "insert"
+    }
+
+
+    output {
+        metrics = [otelcol.processor.memory_limiter.center_limiter.input]
+        logs = [otelcol.processor.transform.global_loki_labels.input]
+        traces = [otelcol.processor.memory_limiter.center_limiter.input]
+    }
+}
+
+otelcol.processor.transform "global_loki_labels" {
+  error_mode = "ignore"
+  log_statements {
+    context = "log" //not sure if this is resource or log for this example as we didnt identify which function worked in attributes, log = loki.attribute.labels and resource = loki.resource.labels
+    statements = [
+      `set(attributes["loki.attribute.labels"], Concat([attributes["loki.attribute.labels"], ", client_name, client_location, client_environment, client_key"], ""))`,
+	  `set(attributes["loki.attribute.labels"],"client_name, client_location, client_environment, client_key") where attributes["loki.attribute.labels"] == nil`, //added trailing comma here
+    ]
+  }
+
+  output {
+    logs    = [otelcol.processor.memory_limiter.center_limiter.input]
+  }
+}
+otelcol.processor.memory_limiter "center_limiter" {
+    check_interval = "1s"
+    limit_percentage = 50
+    spike_limit_percentage = 20
+
+    output {
+        metrics = [otelcol.processor.batch.batch_processor.input]
+        logs = [otelcol.processor.batch.batch_processor.input]
+        traces = [otelcol.processor.batch.batch_processor.input]
+    }
+}
+otelcol.processor.batch "batch_processor" {
+    // send_batch_size = 8192
+    // send_batch_max_size = 0
+    // timeout = env("SEND_BATCH_TIMEOUT")
+    output {
+        metrics = [
+            // otelcol.exporter.otlphttp.to_cloud_otel.input,
+            otelcol.exporter.prometheus.to_local_prometheus.input, 
+            otelcol.exporter.prometheus.to_cloud_prometheus.input,
+            
+            ]
+        logs = [otelcol.exporter.loki.to_cloud_loki.input] 
+        traces = [otelcol.exporter.otlphttp.to_cloud_otel.input]    
+    }
+}
+
+
+
+otelcol.exporter.prometheus "to_cloud_prometheus" {
+    forward_to = [loki.write.to_cloud_loki.receiver]
+}
+
+prometheus.remote_write "to_cloud_prometheus" {
+  endpoint {
+    url = env("GRAFANA_CLOUD_METRICS_ENDPOINT") //"https://prometheus-us-central1.grafana.net/api/prom/push"
+    basic_auth {
+      username = env("GRAFANA_CLOUD_METRICS_USERNAME")
+      password = env("GRAFANA_CLOUD_API_KEY")
+    }
+  }
+}
+
+
+
+
+otelcol.exporter.loki "to_cloud_loki" {
+    forward_to = [loki.write.to_cloud_loki.receiver]
+}
+
+loki.write "to_cloud_loki" {
+    endpoint {
+        url = env("GRAFANA_CLOUD_LOGS_ENDPOINT") //"https://logs-xxx.grafana.net/loki/api/v1/push"
+        basic_auth {
+            username = env("GRAFANA_CLOUD_LOGS_USERNAME")
+            password = env("GRAFANA_CLOUD_API_KEY")
+        }
+    }
+
+}
+
+//https://grafana.com/docs/grafana-cloud/send-data/otlp/send-data-otlp
+otelcol.exporter.otlphttp "to_cloud_otel" {
+    client {
+        endpoint = env("GRAFANA_CLOUD_OTEL_ENDPOINT") //"https://otlp-gateway-prod-us-central-0.grafana.net/otlp" //Actual URL is instance specific
+        auth     = otelcol.auth.basic.grafana_cloud_otel_auth.handler //Only required if sending up to cloud
+    }
+}
+
+//Only required if sending up to cloud
+otelcol.auth.basic "grafana_cloud_otel_auth" {
+    username = env("GRAFANA_CLOUD_OTEL_USERNAME")
+    password = env("GRAFANA_CLOUD_API_KEY")
+}
+
+
+
+otelcol.exporter.prometheus "to_local_prometheus" {
+    forward_to = [prometheus.remote_write.local_prometheus.receiver]
+  
+}
+
+prometheus.remote_write "local_prometheus" {
+  endpoint {
+    url = format("%s/api/v1/write", env("LOCAL_PROMETHEUS_ADDRESS"))
+  }
+}
+
+
+
+
+
+
+logging {
+    level  = env("ALLOY_LOG_LEVEL")
+    format = "logfmt"
+    write_to = [otelcol.receiver.loki.otlp.receiver]
+}
+livedebugging {
+  enabled = true
+}
+tracing {
+  sampling_fraction = 0.1
+
+  write_to = [otelcol.processor.resourcedetection.resource_detection.input]
+}

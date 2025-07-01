@@ -1,0 +1,55 @@
+// Metrics
+
+prometheus.exporter.oracledb "integrations_oracledb" {
+	connection_string = env("ORACLE_CONNECTION_STRING") // oracle://user:password@localhost:1521/orcl.localnet
+}
+
+discovery.relabel "integrations_oracledb" {
+	targets = prometheus.exporter.oracledb.integrations_oracledb.targets
+
+	rule {
+		target_label = "instance"
+		replacement  = constants.hostname
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "integrations/oracledb"
+	}
+}
+
+prometheus.scrape "integrations_oracledb" {
+	targets         = discovery.relabel.integrations_oracledb.output
+	forward_to      = [otelcol.receiver.prometheus.otlp.receiver]
+	job_name        = "integrations/oracledb"
+	scrape_interval = "5m0s"
+	scrape_timeout  = "1m0s"
+}
+
+
+// -----------------------------
+// Logs
+
+local.file_match "logs_integrations_integrations_oracledb" {
+	path_targets = [{
+		__address__ = env("ORACLE_HOST_ADDRESS"),
+		__path__    = env("ORACLE_LOG_PATH"), // /u01/base/diag/rdbms/*/*/trace/alert_*.log
+		instance    = constants.hostname,
+		job         = "integrations/oracledb",
+	}]
+}
+
+loki.process "logs_integrations_integrations_oracledb" {
+	forward_to = [otelcol.receiver.loki.otlp.receiver]
+
+	stage.multiline {
+		firstline     = "\\d+-\\d+-\\d+T\\d+:\\d+:\\d+.\\d+-\\d+:\\d+"
+		max_lines     = 0
+		max_wait_time = "3s"
+	}
+}
+
+loki.source.file "logs_integrations_integrations_oracledb" {
+	targets    = local.file_match.logs_integrations_integrations_oracledb.targets
+	forward_to = [loki.process.logs_integrations_integrations_oracledb.receiver]
+}

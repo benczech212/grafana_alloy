@@ -1,0 +1,23 @@
+prometheus.exporter.redis "integrations_redis_exporter" {
+	redis_addr = env("REDIS_ADDRESS")
+}
+
+discovery.relabel "integrations_redis_exporter" {
+	targets = prometheus.exporter.redis.integrations_redis_exporter.targets
+
+	rule {
+		target_label = "instance"
+		replacement  = constants.hostname
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "integrations/redis_exporter"
+	}
+}
+
+prometheus.scrape "integrations_redis_exporter" {
+	targets    = discovery.relabel.integrations_redis_exporter.output
+	forward_to = [otelcol.receiver.prometheus.otlp.receiver]
+	job_name   = "integrations/redis_exporter"
+}

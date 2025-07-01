@@ -1,0 +1,16 @@
+
+
+
+//Define log collection
+//https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.file/#file-globbing
+local.file_match "logs" {
+    path_targets = [
+        {__path__ = env("LOG_PATH")}, //This is the path to the logs, can be a file or a directory "/var/log/*.log"
+    ]
+}
+loki.source.file "logfiles" {
+    targets    = local.file_match.logs.targets
+    forward_to = [otelcol.receiver.loki.otlp.receiver]
+}
+//forward loki logs to otelcol
+

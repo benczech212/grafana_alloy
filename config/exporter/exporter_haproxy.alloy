@@ -1,0 +1,16 @@
+discovery.relabel "metrics_integrations_integrations_haproxy" {
+	targets = [{
+		__address__ = env("HAPROXY_ADDRESS"),  // localhost:8040
+	}]
+
+	rule {
+		target_label = "instance"
+		replacement  = constants.hostname
+	}
+}
+
+prometheus.scrape "metrics_integrations_integrations_haproxy" {
+	targets    = discovery.relabel.metrics_integrations_integrations_haproxy.output
+	forward_to = [otelcol.receiver.prometheus.otlp.receiver]
+	job_name   = "integrations/haproxy"
+}
